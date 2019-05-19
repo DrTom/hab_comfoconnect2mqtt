@@ -1,0 +1,7 @@
+name: HAB/Comfoconnect
+windows:
+  2:
+    name: comfoconnect2mqtt
+    command: |
+      source ./bin/activate 
+      ./comfoconnect2mqtt -c 192.168.178.23 -u 00000000002510128001144fd71e0d98 -d

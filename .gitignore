@@ -8,3 +8,9 @@
 # Build-related files
 /*.egg-info
 /dist/
+
+.Python
+bin/
+include/
+lib/
+tmp/

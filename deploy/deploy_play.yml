@@ -1,0 +1,12 @@
+- hosts: comfoconnect2mqtt
+  gather_facts: False
+  pre_tasks: 
+  - name: install system python
+    raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+
+- hosts: all
+
+  roles: 
+
+  - role: deploy
+

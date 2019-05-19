@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+from pycomfoconnect import *
+from time import sleep
+import argparse
+import datetime
+import json
+import os
+import paho.mqtt.client as mqtt
+import pycomfoconnect
+import signal
+import yaml
+
+APP_NAME = 'ComfoConnectQ2MQTT'
+APP_VERSION = '0.0.0-pre'
+
+
+###############################################################################
+### mqtt ######################################################################
+###############################################################################
+
+
+def mqtt_on_connect(client, userdata, flags, rc):
+    print("MQTT Connected "+str(rc))
+
+def mqtt_connect(options):
+    global mqtt_client 
+
+    print("Connecting to MQTT ...")
+
+    host = options.mqtt_host
+    port = yaml.load(options.mqtt_port, Loader=yaml.SafeLoader)
+
+    client_id = yaml.load(options.mqtt_client_id, Loader=yaml.SafeLoader)
+
+    mqtt_client = mqtt.Client(client_id=client_id)
+    mqtt_client.on_connect = mqtt_on_connect
+
+    user = yaml.load(options.mqtt_user, Loader=yaml.SafeLoader)
+    password = yaml.load(options.mqtt_password, Loader=yaml.SafeLoader)
+    if user:
+        mqtt_client.username_pw_set(user, password=password)
+
+    mqtt_client.connect(host, port, 60)
+
+    mqtt_client.loop_start()
+    
+
+
+
+###############################################################################
+### comfoconnect ##############################################################
+###############################################################################
+
+### connect to comfoconnect bridge ############################################
+
+def get_bridge(options):
+
+    connect_host_option = yaml.load(options.comfoconnect_host, Loader=yaml.SafeLoader)
+    connect_uuid_option = yaml.load(options.comfoconnect_uuid, Loader=yaml.SafeLoader)
+
+    if connect_uuid_option and connect_uuid_option :
+        return Bridge(connect_host_option, bytes.fromhex(connect_uuid_option))
+
+    bridges = Bridge.discover(options.comfoconnect_host) if connect_host_option else Bridge.discover()
+    if bridges:
+        bridge = bridges[0]
+    else:
+        bridge = None
+
+    if bridge is None:
+        print("No bridges found!")
+        exit(1)
+
+    return bridge
+            
+
+### sensors and events ########################################################
+
+SENSOR_MAPPING= {
+        SENSOR_TEMPERATURE_EXTRACT: {
+            'name': 'extract/temperature',
+            'type': 'temperature' },
+        SENSOR_HUMIDITY_EXTRACT: {
+            'name': 'extract/humidity',
+            'type': 'percent' }, 
+        SENSOR_TEMPERATURE_OUTDOOR: {
+            'name': 'intake/temperature',
+            'type': 'temperature' },
+        SENSOR_HUMIDITY_OUTDOOR: {
+            'name': 'intake/humidity',
+            'type': 'percent' }, 
+        SENSOR_FAN_EXHAUST_DUTY: {
+            'name': 'exhaust/duty',
+            'type': 'percent'
+            },
+        SENSOR_FAN_SUPPLY_DUTY: {
+            'name': 'supply/duty',
+            'type': 'percent'
+            },
+        SENSOR_FAN_EXHAUST_FLOW: {
+            'name': 'exhaust/flow',
+            'type': 'flow'},
+        SENSOR_FAN_SUPPLY_FLOW: {
+            'name': 'supply/flow',
+            'type': 'flow'},
+        SENSOR_POWER_CURRENT: {
+            'name': 'power',
+            'type': 'power'},
+        }
+
+def register_sensors(comfoconnect):
+    for senor in SENSOR_MAPPING:
+        comfoconnect.register_sensor(senor)
+
+def on_event(var, value):
+    utc_offset_sec = time.altzone if time.localtime().tm_isdst else time.timezone
+    utc_offset = datetime.timedelta(seconds=-utc_offset_sec)
+    now = datetime.datetime.now().replace(microsecond=0).replace(tzinfo=datetime.timezone(offset=utc_offset)).isoformat()
+
+    if SENSOR_MAPPING.get(var):
+
+        name = SENSOR_MAPPING.get(var).get('name')
+        type = SENSOR_MAPPING.get(var).get('type')
+
+        if type == 'temperature':
+            payload_value = (float(value)/10.0)
+            payload_unit = '°C'
+        elif type == 'percent':
+            payload_value = value
+            payload_unit = '%'
+        elif type == 'flow':
+            payload_value = value
+            payload_unit = 'm³/h'
+        elif type == 'power':
+            payload_value = value
+            payload_unit = 'W'
+        else:
+            payload_value = value
+            payload_unit = 'UNKNOWN'
+
+        payload = json.dumps({
+            'sensor': name,
+            'value' : payload_value,
+            'unit' : payload_unit,
+            'timestamp' : now,
+            })
+    else:
+        name = var
+        payload = json.dumps({
+            'sensor':  var,
+            'value': value,
+            'unit': None,
+            'timestamp': now,
+            'error': 'Unkown event type'
+            })
+
+    if options.debug:
+        print(payload)
+        
+    mqtt_client.publish("ventilation/sensor/" + name, payload, qos=1, retain=True)
+
+
+
+
+###############################################################################
+### cli and env options #######################################################
+###############################################################################
+
+OPTIONS_DEFAULTS = {
+        'COMFOCONNECT_HOST' : 'ComfoConnect-LAN-C', 
+        'COMFOCONNECT_UUID' : '', 
+        'COMFOCONNECT_CONNECTION_NAME' : APP_NAME,
+        'COMFOCONNECT_CONNECTION_ID' : '00000000000000000000000000000001',
+        'COMFOCONNECT_CONNECTION_PIN' : '0',
+        'MQTT_HOST' : 'hab.local',
+        'MQTT_PORT' : '1883',
+        'MQTT_USER' : '',
+        'MQTT_PASSWORD' : '',
+        'MQTT_CLIENT_ID' : APP_NAME,
+        }
+
+def get_env_or_default(name):
+    return (os.environ.get(name) or OPTIONS_DEFAULTS.get(name) or '')
+
+
+def parseopts(): 
+    parser = argparse.ArgumentParser(
+            description=APP_NAME)
+
+    ### generic options #######################################################
+
+    parser.add_argument('--debug', '-d', help=" debug ", action="store_true", 
+            default=False)
+
+    parser.add_argument('--version','-v', 
+            action='version', version=APP_VERSION)
+
+
+    ### comfoconnect options ##################################################
+
+    parser.add_argument('--comfoconnect-host', '-c', 
+            help=" Internet address or hostname of the ComfoConnect bridge, default: " 
+                + get_env_or_default('COMFOCONNECT_HOST')
+                + " hint: supply an empty string to disable the default",
+            default=get_env_or_default('COMFOCONNECT_HOST'))
+
+    parser.add_argument('--comfoconnect-uuid', 
+            help="""UUID of the comfoconnect host, if you specify both host and uuid 
+                the bridge discovery will be passed over  """,
+            default=get_env_or_default('COMFOCONNECT_UUID'))
+
+    parser.add_argument('--comfoconnect-connection-name', 
+            default=get_env_or_default('COMFOCONNECT_CONNECTION_NAME'))
+
+    parser.add_argument('--comfoconnect-connection-id', 
+            default=get_env_or_default('COMFOCONNECT_CONNECTION_ID'))
+
+    parser.add_argument('--comfoconnect-connection-pin', 
+            default=get_env_or_default('COMFOCONNECT_CONNECTION_PIN'))
+
+    ### mqtt options ##########################################################
+
+    parser.add_argument('--mqtt-host', '-m', 
+            help=" Internet address or hostname of the MQTT HOST, default: " 
+                + get_env_or_default('MQTT_HOST'),
+            default=get_env_or_default('MQTT_HOST'))
+
+    parser.add_argument('--mqtt-port', '-p', 
+            help=" Port of the MQTT HOST, default: " 
+                + get_env_or_default('MQTT_PORT'),
+            default=get_env_or_default('MQTT_PORT'))
+
+    parser.add_argument('--mqtt-user', '-u', 
+            help="MQTT user, default: " 
+                + get_env_or_default('MQTT_USER'),
+            default=get_env_or_default('MQTT_USER'))
+
+    parser.add_argument('--mqtt-client-id', 
+            help="MQTT Client ID, default: " 
+                + get_env_or_default('MQTT_CLIENT_ID'),
+            default=get_env_or_default('MQTT_CLIENT_ID'))
+
+    parser.add_argument('--mqtt-password', '-w', 
+            help="MQTT passwort, default: " 
+                + get_env_or_default('MQTT_PASSWORD')
+                + " hint: setting the MQTT_PASSWORD env var is considered "
+                + " more secure than setting the command line option",
+            default=get_env_or_default('MQTT_PASSWORD'))
+
+
+    ### parse #################################################################
+    
+    return parser.parse_args()
+
+
+###############################################################################
+### main ######################################################################
+###############################################################################
+
+def main():
+    global options
+
+    print(APP_NAME + " " + APP_VERSION)
+
+    options = parseopts()
+
+    if options.debug:
+        print(options) 
+
+    ### mqtt ##################################################################
+
+    mqtt_connect(options)
+
+    ### comfoconnect ##########################################################
+
+    bridge = get_bridge(options)
+
+    print("Bridge host: " + bridge.host)
+    print("Bridge uuid: " + bridge.uuid.hex())
+
+    comfoconnect = ComfoConnect(bridge, 
+            bytes.fromhex(options.comfoconnect_connection_id), 
+            options.comfoconnect_connection_name, 
+            int(options.comfoconnect_connection_pin))
+    comfoconnect.callback_sensor = on_event 
+
+    try:
+        print('Comfoconnect connecting ... ', end='')
+        comfoconnect.connect(False)
+        print('connection up!')
+    except Exception as e:
+        print('ERROR: %s' % e)
+        exit(1)
+
+    print(comfoconnect.cmd_version_request())
+
+    register_sensors(comfoconnect)
+
+
+    ### loop ##################################################################
+
+    print('Running, stop with SIGINT (CTRL-C) or SIGTERM')
+
+    try: 
+        while True:
+            sleep(1)
+            if not comfoconnect.is_connected():
+                print('We are not connected anymore...')
+                exit(-1)
+    except KeyboardInterrupt:
+        pass
+
+
+
+    ### disconnect comfoconnect ###############################################
+
+    print('Disconnecting comfoconnect ...', end='')
+    comfoconnect.disconnect()
+    print(' connection down!')
+
+
+    ### stop mqtt client #######################################################
+
+    mqtt_client.loop_stop()
+
+    exit(0)
+
+if __name__ == "__main__":
+    main()
+

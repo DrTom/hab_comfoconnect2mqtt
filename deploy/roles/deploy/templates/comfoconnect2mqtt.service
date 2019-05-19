@@ -1,0 +1,21 @@
+[Unit]
+Description=Comfoconnect2MQTT Service
+After=syslog.target
+Wants=network-online.target
+After=network.target network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/comfoconnect2mqtt/
+User=comfoconnect2mqtt
+Group=comfoconnect2mqtt
+Environment=PYTHONUNBUFFERED=True
+Environment=COMFOCONNECT_UUID=00000000002510128001144fd71e0d98
+Environment=MQTT_HOST=hab
+Environment=MQTT_USER=ventilation 
+Environment=MQTT_PASSWORD=probable-emotion-discover
+Environment=PATH=/opt/comfoconnect2mqtt/python/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/comfoconnect2mqtt/python/bin/python -u /opt/comfoconnect2mqtt/comfoconnect2mqtt -d
+
+[Install]
+WantedBy=multi-user.target

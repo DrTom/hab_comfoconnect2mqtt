@@ -1,0 +1,86 @@
+- name: install dependencies
+  apt:
+    name: "{{ packages }}"
+    update_cache: yes
+    cache_valid_time: 3600
+  vars: 
+    packages: 
+      - python3-venv
+      - python3-virtualenv
+  tags: [python]
+
+- name: create user
+  user:
+    name: comfoconnect2mqtt
+    system: yes
+    shell: /bin/bash
+  tags: [user]
+
+- name: build archive
+  delegate_to: localhost
+  shell: |
+    #!/bin/bash
+    set -euxo
+    cd {{playbook_dir}}/..
+    git archive -o ./tmp/comfoconnect2mqtt.zip HEAD
+
+- name: copy archive
+  copy:
+    src: '{{playbook_dir}}/../tmp/comfoconnect2mqtt.zip'
+    dest: /tmp/comfoconnect2mqtt.zip
+
+- file:
+    path: '/opt/comfoconnect2mqtt/'
+    state: absent
+
+- file:
+    path: '/opt/comfoconnect2mqtt/'
+    state: directory
+    recurse: yes
+    owner: comfoconnect2mqtt
+
+- name: unarchive zip
+  unarchive: 
+    src: '{{playbook_dir}}/../tmp/comfoconnect2mqtt.zip'
+    dest: /opt/comfoconnect2mqtt
+    owner: comfoconnect2mqtt
+
+- name: install python stuff
+  become_user: comfoconnect2mqtt
+  become: yes
+  become_flags: -i
+  become_method: sudo
+  shell: |
+    cd /opt/comfoconnect2mqtt
+    python3 -m venv python
+    source ./python/bin/activate
+    pip3.7 install -r requirements.txt
+  args:
+    executable: /bin/bash
+  tags: [python, virtualenv]
+
+- name: install systemd service file
+  template:
+    src: comfoconnect2mqtt.service
+    dest: /etc/systemd/system/comfoconnect2mqtt.service
+    mode: 0644
+  tags: [service]
+
+- name: reload systemctl
+  command: systemctl daemon-reload
+  changed_when: false
+  tags: [service]
+
+- name: stop service
+  service:
+    name: comfoconnect2mqtt.service
+    state: stopped
+    enabled: yes
+  tags: [service]
+
+- name: start service
+  service:
+    name: comfoconnect2mqtt.service
+    state: started
+    enabled: yes
+  tags: [service]

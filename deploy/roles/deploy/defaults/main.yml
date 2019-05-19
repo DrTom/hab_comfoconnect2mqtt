@@ -1,0 +1,4 @@
+mqtt_user: 'ventilation'
+mqtt_password: NULL
+mqtt_host: 'hab'
+comfoconnect_uuid: '00000000002510128001144fd71e0d98'
